@@ -68,6 +68,26 @@ class ChatService {
       } else {
         responseContent = this.generateFallbackResponse(message, dbContext);
       }
+
+      // Auto-execute any SQL found in the response
+      if (connectionId && responseContent) {
+        try {
+          const creds = metadata
+            ? await connectionService.getCredentials(userId, connectionId)
+            : null;
+          if (creds) {
+            const queryResults = await this.extractAndExecuteSQL(
+              responseContent,
+              creds,
+            );
+            if (queryResults.length > 0) {
+              metadata = { ...metadata, queryResults };
+            }
+          }
+        } catch (e) {
+          console.warn("SQL auto-execution failed:", e.message);
+        }
+      }
     } catch (error) {
       console.error("Chat error:", error.message);
       responseContent = `I encountered an issue while analyzing your data: ${error.message}. Could you try rephrasing your question?`;
@@ -86,6 +106,7 @@ class ChatService {
     return {
       sessionId: session,
       message: assistantMessage,
+      queryResults: metadata?.queryResults || [],
     };
   }
 
@@ -225,6 +246,67 @@ class ChatService {
   }
 
   /**
+   * Extract SQL queries from AI response and execute them (read-only)
+   */
+  async extractAndExecuteSQL(responseText, creds) {
+    const sqlBlocks = [];
+    const regex = /```sql\n([\s\S]*?)```/gi;
+    let match;
+    while ((match = regex.exec(responseText)) !== null) {
+      sqlBlocks.push(match[1].trim());
+    }
+
+    if (sqlBlocks.length === 0) return [];
+
+    const results = [];
+    for (const sql of sqlBlocks.slice(0, 3)) {
+      // Only execute SELECT/WITH/EXPLAIN queries (read-only safety)
+      const firstWord = sql.split(/\s+/)[0].toUpperCase();
+      if (
+        !["SELECT", "WITH", "EXPLAIN", "SHOW", "DESCRIBE"].includes(firstWord)
+      ) {
+        results.push({
+          sql,
+          error: "Only read-only queries are auto-executed",
+          rows: [],
+        });
+        continue;
+      }
+      try {
+        const result = await DbConnector.executeQuery(
+          creds.dbType,
+          creds,
+          sql + " LIMIT 50",
+        );
+        results.push({
+          sql,
+          rows: (result.rows || []).slice(0, 50),
+          columns: result.rows?.[0] ? Object.keys(result.rows[0]) : [],
+          rowCount: result.rows?.length || 0,
+        });
+      } catch (e) {
+        // If LIMIT fails (e.g. already has LIMIT), retry raw
+        try {
+          const result = await DbConnector.executeQuery(
+            creds.dbType,
+            creds,
+            sql,
+          );
+          results.push({
+            sql,
+            rows: (result.rows || []).slice(0, 50),
+            columns: result.rows?.[0] ? Object.keys(result.rows[0]) : [],
+            rowCount: result.rows?.length || 0,
+          });
+        } catch (e2) {
+          results.push({ sql, error: e2.message, rows: [] });
+        }
+      }
+    }
+    return results;
+  }
+
+  /**
    * Build system prompt with database context
    */
   buildSystemPrompt(dbContext) {
@@ -234,9 +316,13 @@ Key behaviors:
 - Be concise, helpful, and technically accurate
 - Use markdown formatting for readability (bold, code blocks, bullet points)
 - When writing SQL, always use proper syntax for the connected database type
-- If the user asks about data you don't have, suggest how they can explore it
+- When the user asks to see data, show data, or asks questions that need data — ALWAYS write the SQL query in a \`\`\`sql code block so it can be auto-executed
+- If the user asks about data you don't have, write a SQL query to retrieve it
 - Provide actionable insights and recommendations when analyzing schemas
 - Never fabricate data — only reference actual schema information provided below
+- When writing SQL queries, always wrap them in \`\`\`sql code blocks
+- For data exploration requests, write SELECT queries to show real data
+- Use LIMIT to keep results manageable (10-25 rows)
 `;
 
     if (dbContext && !dbContext.error) {

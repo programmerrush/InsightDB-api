@@ -29,6 +29,18 @@ class InsightsController {
     }
   }
 
+  async getAutoInsights(req, res, next) {
+    try {
+      const data = await insightsService.getAutoInsights(
+        req.user.id,
+        req.params.connectionId,
+      );
+      return ApiResponse.success(res, data);
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getTrends(req, res, next) {
     try {
       const { dateColumn, valueColumn, groupBy, schema } = req.query;

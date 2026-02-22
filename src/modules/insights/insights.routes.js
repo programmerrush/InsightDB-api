@@ -5,6 +5,7 @@ const auth = require("../../middleware/auth");
 router.use(auth);
 
 router.get("/:connectionId/overview", insightsController.getOverview);
+router.get("/:connectionId/auto", insightsController.getAutoInsights);
 router.get(
   "/:connectionId/tables/:tableName",
   insightsController.getTableInsights,

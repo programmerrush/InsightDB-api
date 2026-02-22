@@ -77,8 +77,24 @@ class ExplorerService {
         ? `"${schema}"."${tableName}"`
         : `\`${tableName}\``;
 
-    const sql = `SELECT * FROM ${qualifiedName} LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}`;
-    return await DbConnector.executeQuery(creds.dbType, creds, sql);
+    const dataSql = `SELECT * FROM ${qualifiedName} LIMIT ${parseInt(limit)} OFFSET ${parseInt(offset)}`;
+    const countSql = `SELECT COUNT(*) AS total FROM ${qualifiedName}`;
+
+    const [dataResult, countResult] = await Promise.all([
+      DbConnector.executeQuery(creds.dbType, creds, dataSql),
+      DbConnector.executeQuery(creds.dbType, creds, countSql),
+    ]);
+
+    const total = parseInt(
+      countResult.rows?.[0]?.total || countResult.rows?.[0]?.count || 0,
+    );
+    return {
+      rows: dataResult.rows || [],
+      fields: dataResult.fields || [],
+      total,
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+    };
   }
 
   /**
